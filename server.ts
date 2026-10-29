@@ -1,8 +1,8 @@
 import express from 'express';
-import { GoogleGenAI } from '@google/genai';
-import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
 
@@ -10,132 +10,159 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-app.use(express.json({ limit: '15mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 // Shared Gemini client
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+const apiKey = process.env.GEMINI_API_KEY;
+let ai: GoogleGenAI | null = null;
+if (apiKey) {
+  ai = new GoogleGenAI({
+    apiKey: apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
     },
-  },
+  });
+}
+
+// Health check endpoint
+app.get('/api/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    hasApiKey: !!process.env.GEMINI_API_KEY,
+    time: new Date().toISOString(),
+  });
 });
 
-// API endpoint to generate complete exam package: Matrix, Specification, Exam paper, Rubric
-app.post('/api/gemini/generate-exam', async (req, res) => {
+// API generate full exam package via Gemini
+app.post('/api/exam/generate', async (req, res) => {
   try {
-    const { grade, subject, term, topicDetails, customPrompt } = req.body;
-
-    const systemInstruction = `Bạn là Chuyên gia Khảo thí và Đánh giá Giáo dục Tiểu học của Bộ Giáo dục và Đào tạo Việt Nam, am hiểu sâu sắc Chương trình GDPT 2018 và Thông tư 27/2020/TT-BGDĐT.
-Nhiệm vụ của bạn là xây dựng trọn bộ hồ sơ đề kiểm tra định kì gồm:
-1. BẢNG MA TRẬN ĐỀ KIỂM TRA (Ma trận 3 mức độ: M1 Biết, M2 Hiểu, M3 Vận dụng)
-2. BẢNG ĐẶC TẢ ĐỀ KIỂM TRA (Yêu cầu cần đạt chuẩn GDPT 2018 cho từng câu hỏi)
-3. ĐỀ KIỂM TRA ĐỊNH KÌ (Tuân thủ nghiêm ngặt thể thức và quy tắc)
-4. HƯỚNG DẪN CHẤM VÀ ĐÁP ÁN CHI TIẾT (Thang điểm 10)
-
-CÁC QUY TẮC BẮT BUỘC KHÔNG ĐƯỢC PHÉP SAI:
-1. Cấu trúc và thứ tự câu:
-- Đánh số từ Câu 1 đến câu cuối cùng liên tục.
-- TUYỆT ĐỐI KHÔNG GHI tiêu đề "Phần trắc nghiệm" hay "Phần tự luận" trong đề kiểm tra!
-- Trắc nghiệm xếp trước -> Tự luận xếp sau.
-- Trắc nghiệm sắp xếp: Mức 1 trước -> Mức 2 sau.
-  Thứ tự trong từng mức:
-  + Mức 1: Nhiều lựa chọn (NLC) -> Đúng sai (ĐS) -> Nối cột (NC) -> Điền khuyết (ĐK)
-  + Mức 2: NLC -> ĐS -> NC -> ĐK
-- TUYỆT ĐỐI KHÔNG TẠO CÂU TRẮC NGHIỆM Ở MỨC VẬN DỤNG (Mức 3). Tất cả câu Mức 3 PHẢI là TỰ LUẬN!
-- Tự luận sắp xếp: Lần lượt từ Mức 1 (Biết) -> Mức 2 (Hiểu) -> Mức 3 (Vận dụng).
-- Không ghép 2 chủ đề/bài học vào 1 câu. Một chủ đề có nhiều câu thì mỗi câu là 1 đặc tả riêng.
-
-2. Thể thức trình bày và điểm số:
-- Câu số viết đậm, điểm viết nghiêng liền câu số, câu hỏi viết thường.
-  Ví dụ: Câu 1(0,5 điểm): Tính giá trị biểu thức sau:
-- Phương án trắc nghiệm:
-  + Lớp 1, 2, 3: Chỉ gồm 3 phương án: A, B, C.
-  + Lớp 4, 5: Gồm 4 phương án: A, B, C, D.
-- Thang điểm:
-  + TN nhiều lựa chọn: 0,5 điểm / câu.
-  + TN đúng sai, nối cột, điền khuyết: 0,25 điểm / ý.
-  + Tự luận: Mức 1: 0,5 điểm/câu; Mức 2: 1,0 điểm/câu; Mức 3: 1,0 - 2,0 điểm/câu.
-- Tổng điểm đề kiểm tra là 10,0 điểm.
-
-3. Quy định từng môn:
-- TOÁN: Lớp 1-5 tổng số 10 câu (TN 60% = 6đ, TL 40% = 4đ). Tỉ lệ Mức 1-2-3 là 50-30-20% (5đ - 3đ - 2đ).
-  + Lớp 1: Số & PT 80%, Hình học & ĐL 20%.
-  + Lớp 2-3: Kỳ I: Số & PT 70%, HH&ĐL 30%. Kỳ II: Số & PT 70%, HH&ĐL 20%, TK&XS 10%.
-  + Lớp 4-5: Tuân thủ mạch kiến thức từng kì theo chuẩn GDPT 2018.
-- TIẾNG VIỆT:
-  + Lớp 1: Đọc hiểu 4đ (6 câu TN = 3đ gồm 3 câu M1 và 3 câu M2; 1 câu TL = 1đ M3). Độ dài văn bản 90-130 chữ, thơ 50-70 chữ.
-  + Lớp 2-3: Đọc hiểu 6đ (9 câu: Đọc hiểu văn bản 4đ [4 TN=2đ, 2 TL=2đ]; Kiến thức tiếng Việt 2đ [2 TN=1đ, 1 TL=1đ]). Độ dài văn bản chuẩn GDPT 2018 (Lớp 2: 180-200 chữ; Lớp 3: 200-250 chữ).
-  + Lớp 4-5: Đọc hiểu 7đ (11 câu: Đọc hiểu 4đ [4 TN=2đ, 2 TL=2đ]; KTTV 3đ [4 TN=2đ, 1 TL=1đ]). Độ dài văn bản lớp 4: 280-330 chữ; lớp 5: 300-350 chữ.
-- TIN HỌC:
-  + Không trắc nghiệm ở Mức 3.
-  + Lớp 3: TN 6 câu (3đ) - TL 4đ.
-  + Lớp 4: TN 6 câu (3đ) - TL 2 câu (2đ) + Thực hành 2 bài (2đ).
-  + Lớp 5: TN 5 câu (2.5đ) - TL & Thực hành 5đ.
-- KHOA HỌC / LỊCH SỬ & ĐỊA LÝ / CÔNG NGHỆ: 10 câu, Mức 1-2-3 là 50-30-20%, TN 60% - TL 40%.
-
-Hãy xuất ra định dạng JSON thuần tuý (JSON object hợp lệ) theo cấu trúc chuẩn.`;
-
-    const userPrompt = `Hãy tạo trọn bộ hồ sơ kiểm tra định kì cho:
-- Môn học: ${subject}
-- Khối lớp: Lớp ${grade}
-- Kì đánh giá: ${term}
-- Nội dung / Chủ đề trọng tâm: ${topicDetails || 'Theo chương trình chuẩn GDPT 2018 cho thời điểm này'}
-${customPrompt ? `- Yêu cầu thêm từ giáo viên: ${customPrompt}` : ''}
-
-Đầu ra trả về JSON có cấu trúc sau:
-{
-  "title": "ĐỀ KIỂM TRA ĐỊNH KÌ ...",
-  "subject": "${subject}",
-  "grade": ${grade},
-  "term": "${term}",
-  "durationMinutes": 40,
-  "schoolYear": "2026 - 2027",
-  "readingPassage": {
-    "title": "Tên bài đọc (nếu là môn Tiếng Việt)",
-    "content": "Nội dung bài đọc chuẩn độ dài số từ GDPT 2018",
-    "author": "Tác giả",
-    "wordCount": 150
-  },
-  "questions": [
-    {
-      "id": "q1",
-      "questionNumber": 1,
-      "points": 0.5,
-      "level": 1,
-      "type": "TN_NLC",
-      "strand": "Số và phép tính",
-      "content": "Nội dung câu hỏi...",
-      "options": ["Phương án A", "Phương án B", "Phương án C"],
-      "correctAnswer": "A",
-      "explanation": "Lời giải thích...",
-      "specification": "Nhận biết được..."
+    if (!ai) {
+      return res.status(503).json({
+        error: 'Chưa cấu hình GEMINI_API_KEY trên máy chủ. Bạn có thể sử dụng các bộ đề mẫu chuẩn sẵn có hoặc bổ sung API key trong Secrets panel.',
+      });
     }
-  ],
+
+    const {
+      schoolDistrict,
+      schoolName,
+      subject,
+      grade,
+      semester,
+      schoolYear,
+      textbook,
+      duration,
+      customTopics,
+    } = req.body;
+
+    const systemInstruction = `Bạn là một Chuyên gia ra đề kiểm tra tiểu học hàng đầu Việt Nam, am hiểu sâu sắc Chương trình GDPT 2018 và Thông tư 27/2020/TT-BGDĐT.
+Nhiệm vụ của bạn là tạo ra một BỘ HỒ SƠ KIỂM TRA ĐỊNH KÌ TIỂU HỌC HOÀN CHỈNH gồm 4 phần:
+1. KHUNG MA TRẬN ĐỀ KIỂM TRA
+2. BẢNG ĐẶC TẢ ĐỀ KIỂM TRA
+3. ĐỀ KIỂM TRA
+4. HƯỚNG DẪN CHẤM VÀ ĐÁP ÁN BIỂU ĐIỂM
+
+CÁC NGUYÊN TẮC CỐT LÕI BẮT BUỘC (KHÔNG ĐƯỢC VI PHẠM):
+1. Cấu trúc đề kiểm tra:
+- Thứ tự câu: Đánh số từ Câu 1 đến câu cuối cùng (ví dụ Câu 10 hoặc Câu 11), KHÔNG tách thành "Phần I: Trắc nghiệm", "Phần II: Tự luận".
+- TUYỆT ĐỐI KHÔNG ghi cụm từ "Phần trắc nghiệm", "Phần tự luận" làm tiêu đề phân mục trong đề kiểm tra.
+- Các câu hỏi sắp xếp thứ tự: Trắc nghiệm trước, Tự luận sau.
+- Trắc nghiệm: Mức 1 (M1) xếp trước – Mức 2 (M2) xếp sau. Cụ thể:
+  + M1: Biết nhiều lựa chọn (NLC) -> Biết đúng sai (ĐS) -> Biết nối cột (NC) -> Biết điền khuyết (ĐK)
+  + M2: Hiểu nhiều lựa chọn (NLC) -> Hiểu đúng sai (ĐS) -> Hiểu nối cột (NC) -> Hiểu điền khuyết (ĐK)
+- Tự luận: Lần lượt từ Mức 1 (Biết) -> Mức 2 (Hiểu) -> Mức 3 (Vận dụng) (Học sinh tư duy từ dễ đến khó).
+- Không ghép câu thuộc 2 chủ đề/bài học/mạch kiến thức với nhau.
+- TUYỆT ĐỐI KHÔNG TẠO CÂU TRẮC NGHIỆM Ở MỨC VẬN DỤNG (Mức 3 hoàn toàn là tự luận).
+- Lớp 1, 2, 3: Trắc nghiệm nhiều lựa chọn CHỈ CÓ 3 phương án (A, B, C).
+- Lớp 4, 5: Trắc nghiệm nhiều lựa chọn có 4 phương án (A, B, C, D).
+- Định dạng câu hỏi: Câu số in đậm, điểm in nghiêng không đậm liền câu số, câu hỏi không đậm. Ví dụ: "Câu 1 (0,5 điểm): ..."
+- Tổng số câu: Thông thường 10 câu (Toán: 7 câu TN = 7 điểm hoặc 6 câu TN = 3-4 điểm tùy phân bổ; Tiếng Việt Đọc hiểu: Lớp 1: 7 câu; Lớp 2-3: 9 câu; Lớp 4-5: 11 câu).
+- Đối với môn Tiếng Việt: Cung cấp bài đọc hiểu ngoài chương trình với độ dài từ đúng quy định:
+  + Lớp 1: 90-130 chữ (thơ 50-70 chữ)
+  + Lớp 2: 180-200 chữ (thơ 70-90 chữ)
+  + Lớp 3: 200-250 chữ (thơ 80-100 chữ)
+  + Lớp 4: 280-330 chữ (thơ 100-120 chữ)
+  + Lớp 5: 300-350 chữ (thơ 110-130 chữ)
+  Kèm đề Viết đầy đủ (chính tả / nghe viết / tập làm văn).
+
+Hãy trả về phản hồi theo định dạng JSON CHUẨN XÁC theo cấu trúc yêu cầu.`;
+
+    const userPrompt = `Hãy tạo một bộ đề kiểm tra hoàn chỉnh với các thông số:
+- Tỉnh/Huyện/Xã: ${schoolDistrict || 'UBND XÃ XÍN MẦN'}
+- Trường: ${schoolName || 'TRƯỜNG PTDTBT TH CHÍ CÀ'}
+- Môn học: ${subject || 'Toán'}
+- Lớp: ${grade || '4'}
+- Kì kiểm tra: ${semester || 'Giữa Học kì I'}
+- Năm học: ${schoolYear || '2026 - 2027'}
+- Bộ sách: ${textbook || 'Kết nối tri thức với cuộc sống'}
+- Thời gian làm bài: ${duration || '40'} phút
+- Yêu cầu trọng tâm/Chủ đề đặc biệt: ${customTopics || 'Chuẩn chương trình GDPT 2018 theo thời điểm kiểm tra'}
+
+Hãy trả về một JSON Object chứa:
+{
+  "titleInfo": {
+    "district": "UBND XÃ XÍN MẦN",
+    "school": "TRƯỜNG PTDTBT TH CHÍ CÀ",
+    "examTitle": "ĐỀ KIỂM TRA ĐỊNH KÌ GIỮA HỌC KÌ I",
+    "schoolYear": "NĂM HỌC 2026 - 2027",
+    "subject": "TOÁN",
+    "grade": 4,
+    "duration": 40,
+    "readingPassage": { "title": "...", "content": "...", "author": "...", "wordCount": 290 } // nếu là Tiếng Việt
+  },
   "matrix": [
     {
-      "strand": "Tên mạch kiến thức/Chủ đề",
+      "topic": "Số và phép tính",
       "m1_tn_count": 2, "m1_tn_points": 1.0,
-      "m1_tl_count": 0, "m1_tl_points": 0.0,
-      "m2_tn_count": 1, "m2_tn_points": 0.5,
+      "m1_tl_count": 0, "m1_tl_points": 0,
+      "m2_tn_count": 2, "m2_tn_points": 1.0,
       "m2_tl_count": 1, "m2_tl_points": 1.0,
-      "m3_tn_count": 0, "m3_tn_points": 0.0,
-      "m3_tl_count": 1, "m3_tl_points": 1.0,
-      "total_points": 3.5,
-      "percentage": 35
+      "m3_tn_count": 0, "m3_tn_points": 0,
+      "m3_tl_count": 1, "m3_tl_points": 2.0,
+      "total_count": 6, "total_points": 5.0, "percentage": 50
     }
   ],
-  "rubric": [
+  "specification": [
+    {
+      "stt": 1,
+      "topic": "Số và phép tính",
+      "content": "Số có nhiều chữ số",
+      "level": "Mức 1",
+      "competence": "Nhận biết được hàng và lớp của số có 6 chữ số.",
+      "questionType": "TN nhiều lựa chọn",
+      "questionNumber": "Câu 1",
+      "points": 0.5
+    }
+  ],
+  "questions": [
+    {
+      "id": 1,
+      "number": 1,
+      "points": 0.5,
+      "pointsText": "0,5 điểm",
+      "type": "multiple_choice", // "multiple_choice" | "true_false" | "matching" | "fill_blank" | "essay" | "practical"
+      "level": "Mức 1",
+      "topic": "Số và phép tính",
+      "content": "Chữ số 7 trong số 875 321 thuộc hàng nào?",
+      "options": ["A. Hàng trăm", "B. Hàng chục nghìn", "C. Hàng trăm nghìn", "D. Hàng triệu"], // Lớp 1-3 có 3 options, Lớp 4-5 có 4 options
+      "matchingPairs": null, // [{left: "A. ...", right: "1. ..."}] nếu type là matching
+      "tfItems": null, // ["a) ...", "b) ..."] nếu type là true_false
+      "gridData": null // hoặc thông tin vẽ lưới ô vuông nếu là hình học
+    }
+  ],
+  "answerKey": [
     {
       "questionNumber": 1,
-      "answer": "A",
-      "details": "Chi tiết đáp án và biểu điểm từng bước (0,25đ - 0,5đ)",
-      "maxPoints": 0.5
+      "type": "multiple_choice",
+      "correctAnswer": "B",
+      "guide": "Chữ số 7 đứng ở vị trí hàng chục nghìn, có giá trị là 70 000.",
+      "scoreBreakdown": "0,5 điểm: Chọn đúng phương án B. Sai hoặc chọn phương án khác: 0 điểm."
     }
-  ]
+  ],
+  "writingSection": null // Dành riêng cho Tiếng Việt: { readingAloud: "...", dictation: "...", essayPrompt: "..." }
 }`;
 
     const response = await ai.models.generateContent({
@@ -144,50 +171,46 @@ ${customPrompt ? `- Yêu cầu thêm từ giáo viên: ${customPrompt}` : ''}
       config: {
         systemInstruction,
         responseMimeType: 'application/json',
-        temperature: 0.4,
+        temperature: 0.3,
       },
     });
 
-    const text = response.text || '{}';
-    let parsedData;
-    try {
-      parsedData = JSON.parse(text);
-    } catch {
-      // Clean up markdown block if present
-      const cleanJson = text.replace(/```json\n?|\n?```/g, '').trim();
-      parsedData = JSON.parse(cleanJson);
+    const text = response.text;
+    if (!text) {
+      throw new Error('Không nhận được nội dung từ Gemini API');
     }
 
-    return res.json({ success: true, data: parsedData });
-  } catch (err: any) {
-    console.error('Gemini generate-exam error:', err);
+    const examData = JSON.parse(text);
+    return res.json({ success: true, data: examData });
+  } catch (error: any) {
+    console.error('Error generating exam:', error);
     return res.status(500).json({
-      success: false,
-      error: err?.message || 'Có lỗi xảy ra khi tạo đề thi qua Gemini AI',
+      error: error.message || 'Lỗi khi tạo đề kiểm tra bằng AI',
     });
   }
 });
 
-// Vite server middleware for development
+// Setup Vite middleware in dev or static files in prod
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
-    const { createServer } = await import('vite');
-    const vite = await createServer({
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.use(express.static(path.join(__dirname, 'dist')));
     app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
     });
   }
 
-  const portNumber = typeof PORT === 'string' ? parseInt(PORT, 10) : PORT;
-  app.listen(portNumber, '0.0.0.0', () => {
-    console.log(`Server is running on http://localhost:${portNumber}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+});
