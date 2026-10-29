@@ -1,0 +1,6 @@
+{
+  "name": "App Tạo Đề Ma Trận và Đề Kiểm Tra Tiểu Học",
+  "description": "Ứng dụng chuyên gia tạo ma trận, bản đặc tả, đề kiểm tra chuẩn GDPT 2018 và hướng dẫn chấm thang điểm chi tiết cho giáo viên tiểu học các môn Toán, Tiếng Việt, Tin học, Khoa học, Lịch sử & Địa lý, Công nghệ.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
